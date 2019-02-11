@@ -1,0 +1,13 @@
+FROM golang:1.11.5-alpine3.9
+
+RUN apk add postgresql-client
+
+COPY MOCK_DATA.csv /opt/
+RUN mkdir -p $GOPATH/src/github.com/theskyinflames/quiz
+WORKDIR $GOPATH/src/github.com/theskyinflames/quiz
+COPY . ./
+RUN ls -la 
+
+CMD ["/bin/sh","csvreader/start.sh"]
+
+

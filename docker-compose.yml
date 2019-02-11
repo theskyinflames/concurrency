@@ -1,0 +1,32 @@
+version: '3'
+
+services:
+  crmintegrator:
+    image: crmintegrator:latest
+    environment:
+      CRMINTEGRATOR_RPC_SERVER_ADDRESS: :4004
+  csvreader:
+    image: csvreader
+    links:
+      - crmintegrator
+    depends_on: 
+      - db
+    environment: 
+      CSVREADER_CRMINTEGRATOR_RPC_SERVER_ADDRESS: crmintegrator:4004
+      CSVREADER_RECORDS_BLOCK_SIZE: 10
+      CSVREADER_MAX_ATTEMPTS_PER_RECORD: 3
+      CSVREADER_MAX_CONCURRENTS_SENDERS: 10
+      CSVREADER_FILE_PATH: /opt/MOCK_DATA.csv
+      CSVREADER_POSTGRESQL_CONN_STR: postgres://csvreader:csvreader@db/csvreader?sslmode=disable
+      POSTGRES_PASSWORD: csvreader
+      POSTGRES_USER: csvreader
+      PGDATABASE: csvreader
+  db:
+    image: postgres:alpine
+    environment:
+      POSTGRES_PASSWORD: csvreader
+      POSTGRES_USER: csvreader
+      PGDATABASE: csvreader
+    ports:
+      - 5432:5432
+
