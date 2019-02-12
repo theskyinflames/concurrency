@@ -180,8 +180,10 @@ func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) ([]string, er
 			pendingAttemps--
 			var retry bool
 			err = r.client.Call(remoteRPCMethodName, b, &retry)
-			if err != nil {
-				log.Printf("ERROR: some when wrong when trying to process the record %s: %s\n", record.ID, err.Error())
+			if err != nil || retry {
+				if err != nil {
+					log.Printf("ERROR: some when wrong when trying to process the record %s: %s\n", record.ID, err.Error())
+				}
 				if pendingAttemps > 0 && (err != nil || retry) {
 					continue
 				}
