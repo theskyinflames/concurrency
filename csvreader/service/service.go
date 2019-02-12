@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/rpc"
@@ -115,22 +114,51 @@ func (r *Service) Start(reader reader.CSVReaderFunc) (err error) {
 	return nil
 }
 
-func (r *Service) processBlock(block []domain.Record, wg *sync.WaitGroup) (err error) {
+// Process an entire block of records. Firstly, it will be tried to be send
+// to the CRM Integrator. After that, those recors whose CRM Integrator has failded,
+// will be removed from the original records block. Then, the resulting block
+// wil be inserted in PostgreSQL database using COPY command for massive inserts
+func (r *Service) processBlock(block []domain.Record, wg *sync.WaitGroup) error {
 	defer wg.Done()
-	err = r.sendRecordToCrmIntegrator(block) // Send the records's block to CRMIntegrator
+	failedRecords, err := r.sendRecordToCrmIntegrator(block) // Send the records's block to CRMIntegrator
 	if err != nil {
 		log.Println(err.Error())
-		return
+		block = r.removeFailedRecords(block, failedRecords)
 	}
 	err = r.repository.InsertBlock(block) // Save the sent records to PostgreSQL db
 	if err != nil {
 		log.Printf("ERROR: something went wrong when trying to save records to db: %s\n", err.Error())
 	}
-	return
+	return nil
 }
 
-func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) error {
+// Remove the records whose CRM Integrator call has failed, from the recors to be
+// Inserted in the DB
+func (*Service) removeFailedRecords(block []domain.Record, failedRecords []string) []domain.Record {
+	okRecords := make([]domain.Record, 0)
+	var found bool
+	for _, record := range block {
+		found = false
+		for _, failed := range failedRecords {
+			if record.ID == failed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			okRecords = append(okRecords, record)
+		}
+	}
+	return okRecords
+}
 
+// It sends the records of a block to the CRM Integrator. Each record has a maximum
+// number of sending attemps. If the CRM JSON API fails, the CRM Integratro will return
+// the error and a flag retry=true. In this case, it wil be evaluated if there are available
+// retries for the record. If so, the record is sent to the CRM Integrator again. If not,
+// the record is discarded and marked as failed record. This record will not be inserted
+// in DB
+func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) ([]string, error) {
 	// Update concurrent senders counter
 	atomic.AddInt32(&r.concurrentSenders, 1)
 	defer func() {
@@ -139,6 +167,7 @@ func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) error {
 
 	// Tries to send the records to be processed by the CRM Integrator
 	sent := false
+	failedRecords := make([]string, 0)
 	for _, record := range block {
 		b, err := serializer.ItemToGob(record)
 		if err != nil {
@@ -153,19 +182,20 @@ func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) error {
 			err = r.client.Call(remoteRPCMethodName, b, &retry)
 			if err != nil {
 				log.Printf("ERROR: some when wrong when trying to process the record %s: %s\n", record.ID, err.Error())
-			} else {
-				sent = true
+				if pendingAttemps > 0 && (err != nil || retry) {
+					continue
+				}
+				failedRecords = append(failedRecords, record.ID)
+				break
 			}
-
-			if pendingAttemps > 0 && (err != nil || retry) {
-				continue
-			}
+			sent = true
+			log.Printf("record %s sent \n", record.ID)
 			break
 		}
-		if !sent {
-			return errors.New(fmt.Sprintf("ERROR: the records block started with id %s has not been sent", block[0].ID))
-		}
-		log.Printf("record %s sent \n", record.ID)
 	}
-	return nil
+
+	if len(failedRecords) > 0 {
+		return failedRecords, fmt.Errorf("ERROR: the records %#v has failed \n", failedRecords)
+	}
+	return nil, nil
 }
