@@ -96,8 +96,13 @@ func (r *Service) Start(reader reader.CSVReaderFunc) (err error) {
 					// work will be over engineering. So, this limit may be not
 					// exactly
 					if r.concurrentSenders < int32(r.cfg.MaxConcurrentSenders) {
+						atomic.AddInt32(&r.concurrentSenders, 1)
 						wg.Add(1)
-						go r.processBlock(block, &wg)
+						go func(block []domain.Record) {
+							defer wg.Done()
+							r.processBlock(block)
+							atomic.AddInt32(&r.concurrentSenders, -1)
+						}(block)
 						break
 					}
 					time.Sleep(100 * time.Millisecond)
@@ -118,8 +123,7 @@ func (r *Service) Start(reader reader.CSVReaderFunc) (err error) {
 // to the CRM Integrator. After that, those recors whose CRM Integrator has failded,
 // will be removed from the original records block. Then, the resulting block
 // wil be inserted in PostgreSQL database using COPY command for massive inserts
-func (r *Service) processBlock(block []domain.Record, wg *sync.WaitGroup) error {
-	defer wg.Done()
+func (r *Service) processBlock(block []domain.Record) error {
 	failedRecords, err := r.sendRecordToCrmIntegrator(block) // Send the records's block to CRMIntegrator
 	if err != nil {
 		log.Println(err.Error())
@@ -159,11 +163,6 @@ func (*Service) removeFailedRecords(block []domain.Record, failedRecords []strin
 // the record is discarded and marked as failed record. This record will not be inserted
 // in DB
 func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) ([]string, error) {
-	// Update concurrent senders counter
-	atomic.AddInt32(&r.concurrentSenders, 1)
-	defer func() {
-		atomic.AddInt32(&r.concurrentSenders, -1)
-	}()
 
 	// Tries to send the records to be processed by the CRM Integrator
 	sent := false
@@ -184,7 +183,7 @@ func (r *Service) sendRecordToCrmIntegrator(block []domain.Record) ([]string, er
 				if err != nil {
 					log.Printf("ERROR: some when wrong when trying to process the record %s: %s\n", record.ID, err.Error())
 				}
-				if pendingAttemps > 0 && (err != nil || retry) {
+				if pendingAttemps > 0 {
 					continue
 				}
 				failedRecords = append(failedRecords, record.ID)
