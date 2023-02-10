@@ -1,4 +1,4 @@
-# Quiz
+# Concurrency challenge
 This is a solution scenario to this challenge:
 ```
 Let’s assume we have a large csv file that contains the information of the
